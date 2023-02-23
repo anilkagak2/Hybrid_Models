@@ -13,6 +13,8 @@ NVIDIA CUDA specific speedups adopted from NVIDIA Apex examples
 (https://github.com/NVIDIA/apex/tree/master/examples/imagenet)
 
 Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
+
+Hybrid Models added by Anil Kag (https://anilkagak2.github.io)
 """
 import argparse
 import time
