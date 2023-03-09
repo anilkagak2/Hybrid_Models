@@ -1,7 +1,8 @@
 
 
 #data='/projectnb/datascigrp/anilkag/Imagenet-1000/data'
-data='/mnt/disks/data-disk/datasets/imagenet-1000' 
+#data='/mnt/disks/data-disk/datasets/imagenet-1000' 
+data='/mnt/active/datasets/imagenet-1000'
 
 CUDA='0,1,2,3'
 nGPUs=4
