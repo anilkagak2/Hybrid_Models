@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 
+'''
 from tinynas.nn.networks import ProxylessNASNets
 from ofa.imagenet_classification.data_providers.imagenet import ImagenetDataProvider
 from ofa.imagenet_classification.run_manager import ImagenetRunConfig, RunManager
@@ -11,6 +12,7 @@ from ofa.imagenet_classification.elastic_nn.utils import set_running_statistics
 from ofa.model_zoo import ofa_net, ofa_specialized
 from ofa.utils.layers import set_layer_from_config, MBConvLayer, ConvLayer, IdentityLayer, LinearLayer, ResidualBlock
 from ofa.utils import MyNetwork, make_divisible, MyGlobalAvgPool2d
+'''
 
 from timm.models import create_model
 
@@ -469,7 +471,7 @@ def get_model_from_name(model_name, model_type, args, reset_stats=False):
             drop_path_rate=args.drop_path,
             drop_block_rate=args.drop_block,
             global_pool=args.gp,
-            bn_tf=args.bn_tf,
+            #bn_tf=args.bn_tf,
             bn_momentum=args.bn_momentum,
             bn_eps=args.bn_eps,
             scriptable=args.torchscript,
