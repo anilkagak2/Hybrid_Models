@@ -1020,7 +1020,7 @@ def validate(
 
             with amp_autocast():
                 output, _ = model(input)
-                g_output, _ = global_model(input)
+                g_output, _ = global_model(g_input)
                 if isinstance(output, (tuple, list)):
                     output = output[0]
                 if isinstance(g_output, (tuple, list)):
