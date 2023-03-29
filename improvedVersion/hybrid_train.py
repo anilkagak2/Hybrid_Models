@@ -432,8 +432,20 @@ def main():
         _logger.info(
             f'G-Model {safe_model_name(args.global_model)} created, param count:{sum([m.numel() for m in global_model.parameters()])}')
 
-    data_config = resolve_data_config(vars(args), model=model, verbose=utils.is_primary(args))
-    global_data_config = resolve_data_config(vars(args), model=global_model, verbose=utils.is_primary(args))
+    #data_config = resolve_data_config(vars(args), model=model, verbose=utils.is_primary(args))
+    #global_data_config = resolve_data_config(vars(args), model=global_model, verbose=utils.is_primary(args))
+    data_config = model.default_cfg
+    global_data_config = global_model.default_cfg
+
+    if args.local_rank == 0:
+        _logger.info('Data processing configuration for :' + args.model)
+        for n, v in data_config.items():
+            _logger.info('\t%s: %s' % (n, str(v)))
+
+        _logger.info('Data processing configuration for :' + args.global_model)
+        for n, v in global_data_config.items():
+            _logger.info('\t%s: %s' % (n, str(v)))
+    #assert(1==2)
 
     # setup augmentation batch splits for contrastive loss or split bn
     num_aug_splits = 0
