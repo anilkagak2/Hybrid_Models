@@ -1,0 +1,5 @@
+
+PyTorch >= 2.0 
+
+pip install timm==v0.8.17dev0
+
