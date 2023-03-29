@@ -41,6 +41,8 @@ from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 
 from hybrid_models import get_model_from_name
+from hybrid_dataset import hybrid_create_dataset
+from hybrid_loader import hybrid_create_loader 
 
 try:
     from apex import amp
@@ -414,29 +416,8 @@ def main():
     if args.fast_norm:
         set_fast_norm()
 
-    '''
-    in_chans = 3
-    if args.in_chans is not None:
-        in_chans = args.in_chans
-    elif args.input_size is not None:
-        in_chans = args.input_size[0]
-
-    model = create_model(
-        args.model,
-        pretrained=args.pretrained,
-        in_chans=in_chans,
-        num_classes=args.num_classes,
-        drop_rate=args.drop,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=args.drop_block,
-        global_pool=args.gp,
-        bn_momentum=args.bn_momentum,
-        bn_eps=args.bn_eps,
-        scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint,
-        **args.model_kwargs,
-    )'''
     model = get_model_from_name( args, args.model )
+    global_model = get_model_from_name( args, args.global_model )
 
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
@@ -448,8 +429,11 @@ def main():
     if utils.is_primary(args):
         _logger.info(
             f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}')
+        _logger.info(
+            f'G-Model {safe_model_name(args.global_model)} created, param count:{sum([m.numel() for m in global_model.parameters()])}')
 
     data_config = resolve_data_config(vars(args), model=model, verbose=utils.is_primary(args))
+    global_data_config = resolve_data_config(vars(args), model=global_model, verbose=utils.is_primary(args))
 
     # setup augmentation batch splits for contrastive loss or split bn
     num_aug_splits = 0
@@ -461,11 +445,14 @@ def main():
     if args.split_bn:
         assert num_aug_splits > 1 or args.resplit
         model = convert_splitbn_model(model, max(num_aug_splits, 2))
+        global_model = convert_splitbn_model(global_model, max(num_aug_splits, 2))
 
     # move model to GPU, enable channels last layout if set
     model.to(device=device)
+    global_model.to(device=device)
     if args.channels_last:
         model.to(memory_format=torch.channels_last)
+        global_model.to(memory_format=torch.channels_last)
 
     # setup synchronized BatchNorm for distributed training
     if args.distributed and args.sync_bn:
@@ -475,8 +462,10 @@ def main():
             # Apex SyncBN used with Apex AMP
             # WARNING this won't currently work with models using BatchNormAct2d
             model = convert_syncbn_model(model)
+            global_model = convert_syncbn_model(global_model)
         else:
             model = convert_sync_batchnorm(model)
+            global_model = convert_sync_batchnorm(global_model)
         if utils.is_primary(args):
             _logger.info(
                 'Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using '
@@ -486,14 +475,17 @@ def main():
         assert not use_amp == 'apex', 'Cannot use APEX AMP with torchscripted model'
         assert not args.sync_bn, 'Cannot use SyncBatchNorm with torchscripted model'
         model = torch.jit.script(model)
+        global_model = torch.jit.script(global_model)
     elif args.torchcompile:
         # FIXME dynamo might need move below DDP wrapping? TBD
         assert has_compile, 'A version of torch w/ torch.compile() is required for --compile, possibly a nightly.'
         torch._dynamo.reset()
         model = torch.compile(model, backend=args.torchcompile)
+        global_model = torch.compile(global_model, backend=args.torchcompile)
     elif args.aot_autograd:
         assert has_functorch, "functorch is needed for --aot-autograd"
         model = memory_efficient_fusion(model)
+        global_model = memory_efficient_fusion(global_model)
 
     if not args.lr:
         global_batch_size = args.batch_size * args.world_size
@@ -571,12 +563,13 @@ def main():
             if utils.is_primary(args):
                 _logger.info("Using native Torch DistributedDataParallel.")
             model = NativeDDP(model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb)
+            global_model = NativeDDP(global_model, device_ids=[device], broadcast_buffers=not args.no_ddp_bb)
         # NOTE: EMA model does not need to be wrapped by DDP
 
     # create the train and eval datasets
     if args.data and not args.data_dir:
         args.data_dir = args.data
-    dataset_train = create_dataset(
+    dataset_train = hybrid_create_dataset(
         args.dataset,
         root=args.data_dir,
         split=args.train_split,
@@ -588,7 +581,7 @@ def main():
         repeats=args.epoch_repeats,
     )
 
-    dataset_eval = create_dataset(
+    dataset_eval = hybrid_create_dataset(
         args.dataset,
         root=args.data_dir,
         split=args.val_split,
@@ -627,9 +620,10 @@ def main():
     train_interpolation = args.train_interpolation
     if args.no_aug or not train_interpolation:
         train_interpolation = data_config['interpolation']
-    loader_train = create_loader(
+    loader_train = hybrid_create_loader(
         dataset_train,
         input_size=data_config['input_size'],
+        g_input_size=global_data_config['input_size'],
         batch_size=args.batch_size,
         is_training=True,
         use_prefetcher=args.prefetcher,
@@ -656,15 +650,21 @@ def main():
         device=device,
         use_multi_epochs_loader=args.use_multi_epochs_loader,
         worker_seeding=args.worker_seeding,
+
+        g_interpolation=global_data_config['interpolation'], # 'bilinear',
+        g_mean=global_data_config['mean'],  #IMAGENET_DEFAULT_MEAN,
+        g_std=global_data_config['std'],  #IMAGENET_DEFAULT_STD,
+        g_crop_pct=global_data_config['crop_pct'], #None,
     )
 
     eval_workers = args.workers
     if args.distributed and ('tfds' in args.dataset or 'wds' in args.dataset):
         # FIXME reduces validation padding issues when using TFDS, WDS w/ workers and distributed training
         eval_workers = min(2, args.workers)
-    loader_eval = create_loader(
+    loader_eval = hybrid_create_loader(
         dataset_eval,
         input_size=data_config['input_size'],
+        g_input_size=global_data_config['input_size'],
         batch_size=args.validation_batch_size or args.batch_size,
         is_training=False,
         use_prefetcher=args.prefetcher,
@@ -676,6 +676,11 @@ def main():
         crop_pct=data_config['crop_pct'],
         pin_memory=args.pin_mem,
         device=device,
+
+        g_interpolation=global_data_config['interpolation'], # 'bilinear',
+        g_mean=global_data_config['mean'],  #IMAGENET_DEFAULT_MEAN,
+        g_std=global_data_config['std'],  #IMAGENET_DEFAULT_STD,
+        g_crop_pct=global_data_config['crop_pct'], #None,
     )
 
     # setup loss function
@@ -760,6 +765,15 @@ def main():
         _logger.info(
             f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.')
 
+    eval_metrics = validate(
+                model, global_model,
+                loader_eval,
+                validate_loss_fn,
+                args,
+                amp_autocast=amp_autocast,
+            )
+    assert(1==2)
+
     try:
         for epoch in range(start_epoch, num_epochs):
             if hasattr(dataset_train, 'set_epoch'):
@@ -769,7 +783,7 @@ def main():
 
             train_metrics = train_one_epoch(
                 epoch,
-                model,
+                model, global_model,
                 loader_train,
                 optimizer,
                 train_loss_fn,
@@ -789,7 +803,7 @@ def main():
                 utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
             eval_metrics = validate(
-                model,
+                model, global_model,
                 loader_eval,
                 validate_loss_fn,
                 args,
@@ -841,6 +855,7 @@ def main():
 def train_one_epoch(
         epoch,
         model,
+        global_model,
         loader,
         optimizer,
         loss_fn,
@@ -866,23 +881,26 @@ def train_one_epoch(
     losses_m = utils.AverageMeter()
 
     model.train()
+    global_model.eval()
 
     end = time.time()
     num_batches_per_epoch = len(loader)
     last_idx = num_batches_per_epoch - 1
     num_updates = epoch * num_batches_per_epoch
-    for batch_idx, (input, target) in enumerate(loader):
+    for batch_idx, (input, g_input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher:
-            input, target = input.to(device), target.to(device)
+            input, g_input, target = input.to(device), g_input.to(device), target.to(device)
             if mixup_fn is not None:
                 input, target = mixup_fn(input, target)
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
+            g_input = g_input.contiguous(memory_format=torch.channels_last)
 
         with amp_autocast():
             output, _ = model(input)
+            g_output, _ = global_model(input)
             loss = loss_fn(output, target)
 
         if not args.distributed:
@@ -967,6 +985,7 @@ def train_one_epoch(
 
 def validate(
         model,
+        global_model,
         loader,
         loss_fn,
         args,
@@ -979,23 +998,33 @@ def validate(
     top1_m = utils.AverageMeter()
     top5_m = utils.AverageMeter()
 
+    Tlosses_m = utils.AverageMeter()
+    Ttop1_m = utils.AverageMeter()
+    Ttop5_m = utils.AverageMeter()
+
     model.eval()
+    global_model.eval()
 
     end = time.time()
     last_idx = len(loader) - 1
     with torch.no_grad():
-        for batch_idx, (input, target) in enumerate(loader):
+        for batch_idx, (input, g_input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input = input.to(device)
+                g_input = g_input.to(device)
                 target = target.to(device)
             if args.channels_last:
                 input = input.contiguous(memory_format=torch.channels_last)
+                g_input = g_input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
                 output, _ = model(input)
+                g_output, _ = global_model(input)
                 if isinstance(output, (tuple, list)):
                     output = output[0]
+                if isinstance(g_output, (tuple, list)):
+                    g_output = g_output[0]
 
                 # augmentation reduction
                 reduce_factor = args.tta
@@ -1004,14 +1033,21 @@ def validate(
                     target = target[0:target.size(0):reduce_factor]
 
                 loss = loss_fn(output, target)
+                Tloss = loss_fn(g_output, target)
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            Tacc1, Tacc5 = utils.accuracy(g_output, target, topk=(1, 5))
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
                 acc1 = utils.reduce_tensor(acc1, args.world_size)
                 acc5 = utils.reduce_tensor(acc5, args.world_size)
+
+                Treduced_loss = utils.reduce_tensor(Tloss.data, args.world_size)
+                Tacc1 = utils.reduce_tensor(Tacc1, args.world_size)
+                Tacc5 = utils.reduce_tensor(Tacc5, args.world_size)
             else:
                 reduced_loss = loss.data
+                Treduced_loss = Tloss.data
 
             if device.type == 'cuda':
                 torch.cuda.synchronize()
@@ -1019,6 +1055,10 @@ def validate(
             losses_m.update(reduced_loss.item(), input.size(0))
             top1_m.update(acc1.item(), output.size(0))
             top5_m.update(acc5.item(), output.size(0))
+
+            Tlosses_m.update(Treduced_loss.item(), input.size(0))
+            Ttop1_m.update(Tacc1.item(), g_output.size(0))
+            Ttop5_m.update(Tacc5.item(), g_output.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
@@ -1028,13 +1068,16 @@ def validate(
                     '{0}: [{1:>4d}/{2}]  '
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                     'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
+                    'TLoss: {Tloss.val:>7.4f} ({Tloss.avg:>6.4f})  '
                     'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                    'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
+                    'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f}) '
+                    'TAcc@1: {Ttop1.val:>7.4f} ({Ttop1.avg:>7.4f})  '
+                    'TAcc@5: {Ttop5.val:>7.4f} ({Ttop5.avg:>7.4f}) '.format(
                         log_name, batch_idx, last_idx,
                         batch_time=batch_time_m,
-                        loss=losses_m,
-                        top1=top1_m,
-                        top5=top5_m)
+                        loss=losses_m, Tloss=Tlosses_m,
+                        top1=top1_m, Ttop1=Ttop1_m,
+                        top5=top5_m, Ttop5=Ttop5_m)
                 )
 
     metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
