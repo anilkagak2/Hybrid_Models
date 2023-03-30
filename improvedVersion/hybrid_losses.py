@@ -1,3 +1,8 @@
+'''
+Copyright 2023 Anil Kag (https://anilkagak2.github.io)
+
+Hybrid / Abstention Loss functions
+'''
 
 import torch
 import torch.nn as nn
@@ -22,8 +27,8 @@ def osp_loss( logits, targets, num_classes=1000, ):
     return xent
 
 # DiSK : Distilling Scaffolded Knowledge
-def disk_loss( s_logits, t_logits, target, gate, temp_s=4., temp_t=4., topK=10, num_classes=1000, ):
-    y_one_hot = F.one_hot( target, num_classes )
+def disk_loss( s_logits, t_logits, targets, gate, temp_s=4., temp_t=4., topK=10, num_classes=1000, ):
+    y_one_hot = F.one_hot( targets, num_classes )
 
     topk, indices = torch.topk( t_logits, topK ) 
     one_hot = torch.sum( F.one_hot( indices, num_classes=num_classes ), dim=1 )
@@ -43,6 +48,14 @@ def disk_loss( s_logits, t_logits, target, gate, temp_s=4., temp_t=4., topK=10, 
     return disk_loss
 
 
-#
-def hybrid_oracle_loss():
+def hybrid_oracle():
+    pass
+
+def hybrid_router_loss():
+    pass
+
+def hybrid_student_loss():
+    pass
+
+def hybrid_teacher_loss():
     pass

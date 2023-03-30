@@ -1,3 +1,9 @@
+'''
+Copyright 2023 Anil Kag (https://anilkagak2.github.io)
+
+Routers for DiSK and Hybrid schemes
+'''
+
 
 import torch
 import torch.nn as nn
@@ -7,7 +13,7 @@ from torch.distributions import Categorical
 class DiSK_Router(nn.Module):
     def __init__(self, n_labels=1000, num_features=-1):
         print('---------------------------------- DiSK Router (teacher_ft) --')
-        super(ImageNet_Routing_B2, self).__init__()
+        super(DiSK_Router, self).__init__()
 
         self.n_labels = n_labels
         n_ft = 64
@@ -32,7 +38,7 @@ class DiSK_Router(nn.Module):
 class Hybrid_Router(nn.Module):
     def __init__(self, n_labels=1000, num_features=-1):
         print('---------------------------------- Hybrid Router (student_ft) --')
-        super(ImageNet_Routing_B2, self).__init__()
+        super(Hybrid_Router, self).__init__()
 
         self.K = 10
         self.n_labels = n_labels
@@ -82,11 +88,11 @@ class Hybrid_Router(nn.Module):
         x = torch.cat([ s_logits, s_ft ], dim=1)
         return self.routing( x )
 
-def get_router( routing_name = 'DiSK_Router', n_labels=1000, t_num_ft=-1 ):
+def get_router( routing_name = 'DiSK_Router', n_labels=1000, num_features=-1 ):
     if routing_name=='DiSK_Router':
-        routingNet = DiSK_Router( n_labels = n_labels, num_features=t_num_ft )
+        routingNet = DiSK_Router( n_labels = n_labels, num_features=num_features )
     elif routing_name=='Hybrid_Router':
-        routingNet = Hybrid_Router( n_labels = n_labels, num_features=t_num_ft )
+        routingNet = Hybrid_Router( n_labels = n_labels, num_features=num_features )
     else:
         assert(1==2)
     return routingNet

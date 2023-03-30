@@ -1,3 +1,8 @@
+'''
+Copyright 2023 Anil Kag (https://anilkagak2.github.io)
+
+Wrapper on top of timm models for ease in accessing intermediate features and classifier logits
+'''
 
 import torch 
 import torch.nn as nn

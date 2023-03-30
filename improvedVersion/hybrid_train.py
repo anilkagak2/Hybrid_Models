@@ -379,6 +379,10 @@ def _parse_args():
     return args, args_text
 
 
+def print_model_info(model, model_name):
+    _logger.info(
+            f'Model {safe_model_name(model_name)} created, param count:{sum([m.numel() for m in model.parameters()])}')
+
 def main():
     utils.setup_default_logging()
     args, args_text = _parse_args()
@@ -433,10 +437,11 @@ def main():
         model.set_grad_checkpointing(enable=True)
 
     if utils.is_primary(args):
-        _logger.info(
-            f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}')
-        _logger.info(
-            f'G-Model {safe_model_name(args.global_model)} created, param count:{sum([m.numel() for m in global_model.parameters()])}')
+        print_model_info(model, args.model)
+        print_model_info(global_model, args.global_model)
+        print_model_info(disk_router, args.disk_router)
+        print_model_info(hybrid_router, args.hybrid_router)
+    assert(1==2)
 
     data_config = resolve_data_config(vars(args), pretrained_cfg=model.default_cfg, model=model, verbose=utils.is_primary(args))
     global_data_config = resolve_data_config(vars(args), pretrained_cfg=global_model.default_cfg, model=global_model, verbose=utils.is_primary(args))
