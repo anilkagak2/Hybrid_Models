@@ -95,14 +95,14 @@ def get_model_infos( model, shape, cuda=True ):
 def get_model_with_stats( args, model_name, model_type='timm' ):
     model, cfg, in_chans = get_model_from_name( args, model_name, model_type )
     resolution = cfg['input_size'][2]
-    macs, params = get_model_infos( model, (in_chans, resolution, resolution), cuda=False )
+    macs, params = get_model_infos( model, (1, in_chans, resolution, resolution), cuda=False )
 
     model_stats = {}
     model_stats[model_name+'param'] = params
     model_stats[model_name+'flop'] = macs
 
     del model
-    model, cfg = get_model_from_name( args, model_name, model_type )
+    model, _, _ = get_model_from_name( args, model_name, model_type )
     return model, model_stats
 
 def execute_network( student, teacher, disk_router, hybrid_router, inputs, g_inputs, args, train=False ):

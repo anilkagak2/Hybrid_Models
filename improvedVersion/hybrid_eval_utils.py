@@ -11,7 +11,7 @@ def pretty_print_cov_acc( pd_data ):
                     'hybrid-acc', 'hybrid-flops'] )
     print(df.to_markdown()) 
 
-def add_standalone_stats( pd_data, global_model_stats ):
+def add_standalone_stats( pd_data, global_model_stats, global_model_name ):
     pd_data.append( [ 'standalone',
                   global_model_name, 
                   '', 
@@ -35,13 +35,13 @@ def eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_s
     model_stats[args.model + 'valid_acc1'] = s_acc.item()
     global_model_stats[args.global_model + 'valid_acc1'] = t_acc.item()
 
-    add_standalone_stats( pd_data, model_stats )
-    add_standalone_stats( pd_data, global_model_stats )
+    add_standalone_stats( pd_data, model_stats, args.model )
+    add_standalone_stats( pd_data, global_model_stats, args.global_model )
 
     pretty_print_cov_acc( pd_data )
     
     for scheme in ['agreement', 'margin', 'margin-upper']:
-        add_hybrid_stats_in_table( pd_data, all_tensors, scheme=scheme )    
+        add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme )    
 
     pretty_print_cov_acc( pd_data )
 
@@ -50,7 +50,7 @@ def get_entropy_thr_at_cov(y_entropy, target_cov=0.9, num=50, low=0, high=5):
     best_thr=-10.0 #-1.84
     _best_cov = 0.99
     for thr in list(np.linspace(low, high, num=num)):
-        _cov = np.mean( (y_entropy <= thr)*1 )
+        _cov = torch.mean( (y_entropy <= thr)*1. )
         if _cov >= target_cov and _cov<=_best_cov: 
             _best_cov = _cov
             best_thr = thr
@@ -61,14 +61,14 @@ def get_thr_at_cov(y_gate, target_cov=0.9, num=50, low=-2, high=2):
     _best_cov = 0.99
     for thr in list(np.linspace(low, high, num=num)):
         #_cov = np.mean( ((y_gate_vals[:,1]-y_gate_vals[:,0]) >= thr)*1  )
-        _cov = np.mean( (y_gate >= thr)*1  )
+        _cov = torch.mean( (y_gate >= thr)*1.  )
         if _cov >= target_cov and _cov<=_best_cov: 
             _best_cov = _cov
             best_thr = thr
     return best_thr, _best_cov
 
 
-def add_pd_data(pd_data, prefix, global_model_stats, base_model_stats, hybrid_model_stats, scheme_name='Entropy'):
+def add_pd_data(args, pd_data, prefix, global_model_stats, base_model_stats, hybrid_model_stats, scheme_name='Entropy'):
     model_name = args.model
     global_model_name = args.global_model
     pd_data.append( [
@@ -88,6 +88,8 @@ def add_pd_data(pd_data, prefix, global_model_stats, base_model_stats, hybrid_mo
 
 def add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme='agreement', cov=0.9 ):
     all_s_pred, all_t_pred, all_y_true, all_s_entropy, all_hybrid_gate, all_disk_gate = all_tensors
+    model_name = args.model
+    global_model_name = args.global_model
 
     if scheme == 'agreement':
         scheme_name = 'Oracle-Agreement'
@@ -103,31 +105,29 @@ def add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_m
         #route = np.logical_or(base_y_pred==base_y_true, (global_y_pred!=base_y_true) ) 
         route = torch.logical_or( all_t_pred != all_y_true, all_s_pred == all_y_true )
     elif scheme == 'gate':
-        best_thr, _best_cov = get_thr_at_cov(y_gate, target_cov=cov, num=2000, low=-4, high=4)
+        best_thr, _best_cov = get_thr_at_cov(all_hybrid_gate, target_cov=cov, num=2000, low=-4, high=4)
         #print('[Gating] Best cov = ', _best_cov, ' at thr=', best_thr)
         thr=best_thr #-1.84
         scheme_name = 'Gating-' + '{:.2f}'.format(cov)
         #prefix=model_name+'-gating-vals-'+ str(thr)  + '{:.2f}'.format(cov)
         prefix=model_name+'-gating-vals-'+ '{:.2f}'.format(cov)
         #route = ((y_gate_vals[:,1]-y_gate_vals[:,0]) >= thr)*1 
-        route = (y_gate >= thr) 
+        route = (all_hybrid_gate >= thr) 
     elif scheme == 'entropy':
         scheme_name = 'Entropy-' + '{:.2f}'.format(cov)
         prefix=model_name+'entropy-' + '{:.2f}'.format(cov)
-        best_thr, _best_cov = get_entropy_thr_at_cov(base_y_entropy, target_cov=cov, num=500, low=0, high=5)
+        best_thr, _best_cov = get_entropy_thr_at_cov(all_s_entropy, target_cov=cov, num=500, low=0, high=5)
         #print('[Entropy] Best cov = ', _best_cov, ' at thr=', best_thr)
         found_th = best_thr
         route=all_s_entropy <= found_th  #base_y_entropy<=found_th
     else:
         raise NotImplementedError 
 
-    add_hybrid_stats( args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, route, torch.logical_not(route),  
-              model_stats, global_model_stats, hybrid_model_stats, prefix=prefix, )
+    add_hybrid_stats( args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, route, torch.logical_not(route), prefix=prefix, )
 
-    add_pd_data( pd_data, prefix, global_model_stats, model_stats, hybrid_model_stats, scheme_name=scheme_name, )
+    add_pd_data( args, pd_data, prefix, global_model_stats, model_stats, hybrid_model_stats, scheme_name=scheme_name, )
 
-def add_hybrid_stats( args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, gate_base, gate_global,  
-              model_stats, global_model_stats, hybrid_model_stats, prefix='entropy', ) 
+def add_hybrid_stats( args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, gate_base, gate_global,  prefix='entropy', ): 
     all_s_pred, all_t_pred, all_y_true, all_s_entropy, all_hybrid_gate, all_disk_gate = all_tensors
     base_name = args.model
     global_name = args.global_model
