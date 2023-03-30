@@ -361,6 +361,21 @@ group.add_argument('--use-multi-epochs-loader', action='store_true', default=Fal
 group.add_argument('--log-wandb', action='store_true', default=False,
                    help='log training and validation metrics to wandb')
 
+def execute_network( student, teacher, disk_router, hybrid_router, inputs, g_inputs, args, train=False ):
+    with torch.no_grad():
+        t_logits, t_ft = teacher(g_inputs)
+
+    if train:
+      s_logits, s_ft = student(inputs)
+      hybrid_gate = hybrid_router( s_logits, s_ft )
+      disk_gate = disk_router( t_logits, t_ft )
+    else:
+      with torch.no_grad():
+        s_logits, s_ft = student(inputs)
+        hybrid_gate = hybrid_router( s_logits, s_ft )
+        disk_gate = disk_router( t_logits, t_ft )
+
+    return s_logits, t_logits, hybrid_gate, disk_gate
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -783,12 +798,13 @@ def main():
             f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.')
 
     eval_metrics = validate(
-                model, global_model,
+                model, global_model, disk_router, hybrid_router,
                 loader_eval,
                 validate_loss_fn,
                 args,
                 amp_autocast=amp_autocast,
             )
+    assert(1==2)
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -819,7 +835,7 @@ def main():
                 utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
             eval_metrics = validate(
-                model, global_model,
+                model, global_model, disk_router, hybrid_router,
                 loader_eval,
                 validate_loss_fn,
                 args,
@@ -1001,7 +1017,7 @@ def train_one_epoch(
 
 def validate(
         model,
-        global_model,
+        global_model, disk_router, hybrid_router,
         loader,
         loss_fn,
         args,
@@ -1035,8 +1051,11 @@ def validate(
                 g_input = g_input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                output, _ = model(input)
-                g_output, _ = global_model(g_input)
+                s_logits, t_logits, hybrid_gate, disk_gate = execute_network( model, global_model, disk_router, hybrid_router, 
+                       input, g_input, args, train=False )
+                output, g_output = s_logits, t_logits
+                #output, _ = model(input)
+                #g_output, _ = global_model(g_input)
                 if isinstance(output, (tuple, list)):
                     output = output[0]
                 if isinstance(g_output, (tuple, list)):

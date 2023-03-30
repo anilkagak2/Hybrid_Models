@@ -43,12 +43,13 @@ class Hybrid_Router(nn.Module):
         self.K = 10
         self.n_labels = n_labels
         n_ft = 64
+        n_ft2 = 128
 
         self.transform_ft = nn.Sequential(
-                nn.Linear(num_features, n_labels, bias=True),
-                nn.BatchNorm1d( n_labels ),
+                nn.Linear(num_features, n_ft2, bias=True),
+                nn.BatchNorm1d( n_ft2 ),
                 nn.ReLU(),
-                nn.Linear(n_labels, n_ft, bias=True),
+                nn.Linear(n_ft2, n_ft, bias=True),
                 nn.BatchNorm1d( n_ft ),
                 nn.ReLU(),
             )

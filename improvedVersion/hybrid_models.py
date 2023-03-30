@@ -10,6 +10,25 @@ import torch.nn.functional as F
 
 from timm.models import create_model
 
+def efficientnet_forward_head(model, x):
+    x = model.global_pool(x)
+    if model.drop_rate > 0.:
+        x = F.dropout(x, p=model.drop_rate, training=model.training)
+    ft = x
+    x = model.classifier(x)
+    return x, ft
+
+def mbv3_forward_head(model, x):
+    x = model.global_pool(x)
+    x = model.conv_head(x)
+    x = model.act2(x)
+    x = model.flatten(x)
+    if model.drop_rate > 0.:
+        x = F.dropout(x, p=model.drop_rate, training=model.training)
+    ft = x
+    x = model.classifier(x)
+    return x, ft
+
 class TimmModel(nn.Module):
     def __init__( self, args, model_name, in_chans=3 ):
         super(TimmModel, self).__init__()
@@ -30,13 +49,21 @@ class TimmModel(nn.Module):
           **args.model_kwargs,
         )
 
+        if 'mobilenetv3' in model_name:
+            self.forward_head = mbv3_forward_head
+        elif 'efficientnet' in model_name:
+            self.forward_head = efficientnet_forward_head
+        else:
+            raise NotImplementedError
+
         self.default_cfg = self.model.default_cfg
         self.num_classes = self.model.num_classes
         self.num_features = self.model.num_features
 
     def forward(self, x):
         ft = self.model.forward_features(x)
-        x = self.model.forward_head(ft)
+        x, ft = self.forward_head(self.model, ft)
+        #x = self.model.forward_head(ft)
         return x, ft
 
 
