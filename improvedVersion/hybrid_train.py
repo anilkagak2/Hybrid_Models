@@ -42,10 +42,11 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 
-from hybrid_models import get_model_from_name, execute_network
+from hybrid_models import get_model_with_stats, execute_network
 from hybrid_dataset import hybrid_create_dataset
 from hybrid_loader import hybrid_create_loader 
 from hybrid_routers import get_router
+from hybrid_eval_utils import eval_hybrid_cov_acc
 
 try:
     from apex import amp
@@ -424,8 +425,12 @@ def main():
     if args.fast_norm:
         set_fast_norm()
 
-    model = get_model_from_name( args, args.model )
-    global_model = get_model_from_name( args, args.global_model )
+    # type, global-model, base-model, global-flops, global-acc, base-flops, base-acc, base-cov, base@cov, global@cov, hybrid-acc, hybrid-flops
+    pd_data = []
+    hybrid_model_stats = {}
+
+    model, model_stats = get_model_with_stats( args, args.model )
+    global_model, global_model_stats = get_model_with_stats( args, args.global_model )
 
     disk_router = get_router( args.disk_router, n_labels=model.num_classes, num_features=global_model.num_features )
     hybrid_router = get_router( args.hybrid_router, n_labels=model.num_classes, num_features=model.num_features )
@@ -792,14 +797,7 @@ def main():
                 amp_autocast=amp_autocast,
             )
     if utils.is_primary(args):
-        all_s_pred, all_t_pred, all_y_true, all_s_entropy, all_hybrid_gate, all_disk_gate = all_tensors
-        print('all_s_pred', all_s_pred.shape)
-        print('all_y_true', all_y_true.shape)
-
-        s_acc = torch.mean( (all_s_pred == all_y_true) * 1. )
-        t_acc = torch.mean( (all_t_pred == all_y_true) * 1. )
-        print('s_acc ', s_acc)
-        print('t_acc ', t_acc)
+        eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats )
     
     assert(1==2)
 
