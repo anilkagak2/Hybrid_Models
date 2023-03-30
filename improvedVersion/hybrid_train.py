@@ -40,7 +40,7 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 
-from hybrid_models import get_model_from_name
+from hybrid_models import get_model_from_name, execute_network
 from hybrid_dataset import hybrid_create_dataset
 from hybrid_loader import hybrid_create_loader 
 from hybrid_routers import get_router
@@ -360,22 +360,6 @@ group.add_argument('--use-multi-epochs-loader', action='store_true', default=Fal
                    help='use the multi-epochs-loader to save time at the beginning of every epoch')
 group.add_argument('--log-wandb', action='store_true', default=False,
                    help='log training and validation metrics to wandb')
-
-def execute_network( student, teacher, disk_router, hybrid_router, inputs, g_inputs, args, train=False ):
-    with torch.no_grad():
-        t_logits, t_ft = teacher(g_inputs)
-
-    if train:
-      s_logits, s_ft = student(inputs)
-      hybrid_gate = hybrid_router( s_logits, s_ft )
-      disk_gate = disk_router( t_logits, t_ft )
-    else:
-      with torch.no_grad():
-        s_logits, s_ft = student(inputs)
-        hybrid_gate = hybrid_router( s_logits, s_ft )
-        disk_gate = disk_router( t_logits, t_ft )
-
-    return s_logits, t_logits, hybrid_gate, disk_gate
 
 def _parse_args():
     # Do we have a config file to parse?

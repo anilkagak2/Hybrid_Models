@@ -81,3 +81,21 @@ def get_model_from_name( args, model_name, model_type='timm' ):
         print( 'model_type ' + model_type + ' not supported!' )
         raise NotImplementedError 
     return model #, model_cfg
+
+
+def execute_network( student, teacher, disk_router, hybrid_router, inputs, g_inputs, args, train=False ):
+    with torch.no_grad():
+        t_logits, t_ft = teacher(g_inputs)
+
+    if train:
+      s_logits, s_ft = student(inputs)
+      hybrid_gate = hybrid_router( s_logits, s_ft )
+      disk_gate = disk_router( t_logits, t_ft )
+    else:
+      with torch.no_grad():
+        s_logits, s_ft = student(inputs)
+        hybrid_gate = hybrid_router( s_logits, s_ft )
+        disk_gate = disk_router( t_logits, t_ft )
+
+    return s_logits, t_logits, hybrid_gate, disk_gate
+
