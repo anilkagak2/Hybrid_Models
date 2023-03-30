@@ -43,6 +43,7 @@ from timm.utils import ApexScaler, NativeScaler
 from hybrid_models import get_model_from_name
 from hybrid_dataset import hybrid_create_dataset
 from hybrid_loader import hybrid_create_loader 
+from hybrid_routers import get_router
 
 try:
     from apex import amp
@@ -107,7 +108,9 @@ group.add_argument('--class-map', default='', type=str, metavar='FILENAME',
 group = parser.add_argument_group('Model parameters')
 group.add_argument('--model', default='resnet50', type=str, metavar='MODEL',
                    help='Name of model to train (default: "resnet50")')
-group.add_argument('--routing_model', default='resnet50', type=str, metavar='ROUTING_MODEL',
+group.add_argument('--hybrid_router', default='Hybrid_Router', type=str, metavar='HYBRID_ROUTER',
+                   help='Name of model to train (default: "resnet50")')
+group.add_argument('--disk_router', default='Disk_Router', type=str, metavar='DISK_ROUTER',
                    help='Name of model to train (default: "resnet50")')
 group.add_argument('--global_model', default='resnet50', type=str, metavar='GLOBAL_MODEL',
                    help='Name of model to train (default: "resnet50")')
@@ -419,6 +422,9 @@ def main():
     model = get_model_from_name( args, args.model )
     global_model = get_model_from_name( args, args.global_model )
 
+    disk_router = get_router( args.disk_router, n_labels=model.num_classes, num_features=global_model.num_features )
+    hybrid_router = get_router( args.hybrid_router, n_labels=model.num_classes, num_features=model.num_features )
+
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
@@ -450,6 +456,10 @@ def main():
     # move model to GPU, enable channels last layout if set
     model.to(device=device)
     global_model.to(device=device)
+    
+    disk_router.to(device=device)
+    hybrid_router.to(device=device)
+
     if args.channels_last:
         model.to(memory_format=torch.channels_last)
         global_model.to(memory_format=torch.channels_last)
@@ -482,6 +492,9 @@ def main():
         torch._dynamo.reset()
         model = torch.compile(model, backend=args.torchcompile)
         global_model = torch.compile(global_model, backend=args.torchcompile)
+
+        disk_router = torch.compile(disk_router, backend=args.torchcompile)
+        hybrid_router = torch.compile(hybrid_router, backend=args.torchcompile)
     elif args.aot_autograd:
         assert has_functorch, "functorch is needed for --aot-autograd"
         model = memory_efficient_fusion(model)

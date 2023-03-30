@@ -27,9 +27,7 @@ class DiSK_Router(nn.Module):
             )
 
     def forward(self, t_logits, t_ft ):
-        gate = self.routing( t_ft )
-        return gate  
-
+        return self.routing( t_ft )
 
 class Hybrid_Router(nn.Module):
     def __init__(self, n_labels=1000, num_features=-1):
@@ -82,14 +80,12 @@ class Hybrid_Router(nn.Module):
         s_logits = self.process_logits( s_logits )
 
         x = torch.cat([ s_logits, s_ft ], dim=1)
-        gate = self.routing( x )
-        return gate  
+        return self.routing( x )
 
-
-def get_gating_model( routing_name = 'DiSK_Router', n_labels=1000, t_num_ft=-1 ):
+def get_router( routing_name = 'DiSK_Router', n_labels=1000, t_num_ft=-1 ):
     if routing_name=='DiSK_Router':
         routingNet = DiSK_Router( n_labels = n_labels, num_features=t_num_ft )
-    elif routing_name=='DiSK_Router':
+    elif routing_name=='Hybrid_Router':
         routingNet = Hybrid_Router( n_labels = n_labels, num_features=t_num_ft )
     else:
         assert(1==2)
