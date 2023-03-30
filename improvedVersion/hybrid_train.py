@@ -772,7 +772,6 @@ def main():
                 args,
                 amp_autocast=amp_autocast,
             )
-    assert(1==2)
 
     try:
         for epoch in range(start_epoch, num_epochs):
