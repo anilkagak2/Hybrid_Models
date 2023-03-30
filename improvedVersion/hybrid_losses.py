@@ -10,11 +10,11 @@ import torch.nn.functional as F
 
 # Without epsilons, lambdas, and mus
 # OSP: Selective Classification via One-Sided Prediction
-def osp_loss( logits, targets, num_classes=1000, ):
+def osp_loss( logits, targets, args, y_one_hot ):
     eps=1e-7
     tol=1e-8
 
-    y_input = F.one_hot( targets, num_classes )
+    y_input = y_one_hot #F.one_hot( targets, args.num_classes )
     y_out   = F.softmax( logits, dim=1 )
 
     n_pos = torch.sum( y_input, dim=0 ) + 0.1
@@ -27,35 +27,69 @@ def osp_loss( logits, targets, num_classes=1000, ):
     return xent
 
 # DiSK : Distilling Scaffolded Knowledge
-def disk_loss( s_logits, t_logits, targets, gate, temp_s=4., temp_t=4., topK=10, num_classes=1000, ):
-    y_one_hot = F.one_hot( targets, num_classes )
-
-    topk, indices = torch.topk( t_logits, topK ) 
-    one_hot = torch.sum( F.one_hot( indices, num_classes=num_classes ), dim=1 )
+def disk_loss( s_logits, t_logits, targets, gate, args, y_one_hot ):
+    topk, indices = torch.topk( t_logits, args.topK ) 
+    one_hot = torch.sum( F.one_hot( indices, num_classes=args.num_classes ), dim=1 )
     one_hot = torch.max( one_hot, y_one_hot )
 
-    z = (s_logits / temp_s) 
+    z = (s_logits / args.temp_s) 
     z = F.softmax( z, dim=1 )
     z = z + gate.view(-1, 1)  * one_hot
     N = z.size(0)
 
     min_vals, _ = torch.min(t_logits, 1, keepdim=True)
-    ty = (t_logits / temp_t) * one_hot + min_vals * (1-one_hot)  
+    ty = (t_logits / args.temp_t) * one_hot + min_vals * (1-one_hot)  
     ty = F.softmax( ty, dim=1 ) 
     soft_teacher = ty * one_hot
 
-    disk_loss = temp_s * temp_t * torch.sum( - soft_teacher * torch.log(z) ) / N
+    disk_loss = args.temp_s * args.temp_t * torch.sum( - soft_teacher * torch.log(z) ) / N
     return disk_loss
 
+# Disk budget
+def disk_budget_loss( args, gate, s_logits, t_pred, n_incorrect ):
+    b_correct = F.cross_entropy( s_logits, t_pred, reduction='none' )
+    b_correct = torch.clamp( b_correct, max=args.max_ce )  
+    b_correct = b_correct.view(-1, 1)
 
-def hybrid_oracle():
-    pass
+    budget_loss = args.lmbda * F.relu( (1/n_incorrect) * torch.sum( gate * b_correct ) - args.budget_g )
+    return budget_loss
 
-def hybrid_router_loss():
-    pass
+# Label smoothing cross-entropy loss
+def label_smoothing_ce_loss( logits, targets, args ):
+    logprobs = F.log_softmax(logits, dim=-1)
+    nll_loss = -logprobs.gather(dim=-1, index=targets.unsqueeze(1))
+    nll_loss = nll_loss.squeeze(1)
+    smooth_loss = -logprobs.mean(dim=-1)
+    loss = (1. - args.smoothing) * nll_loss + args.smoothing * smooth_loss
+    return loss.mean()
 
-def hybrid_student_loss():
-    pass
+def hybrid_oracle( s_logits, t_logits, targets ):
+    t_pred = torch.argmax( t_logits, dim=1 )
+    s_pred = torch.argmax( s_logits, dim=1 )
+    n_incorrect = torch.sum( (targets != s_pred) * 1. )
 
-def hybrid_teacher_loss():
-    pass
+    # oracle defn.
+    oracle = torch.logical_or( t_pred != targets, s_pred == targets )
+
+    return oracle, s_pred, t_pred, n_incorrect
+
+def hybrid_router_loss( router, oracle, args ):
+    clf_loss = F.binary_cross_entropy( router, oracle )
+    cov_loss = F.relu( torch.mean( router ) - args.cov ) 
+    return clf_loss + cov_loss
+
+def hybrid_loss( s_logits, t_logits, disk_gate, hybrid_gate, targets, args ):
+    y_one_hot = F.one_hot( targets, args.num_classes )
+    oracle, s_pred, t_pred, n_incorrect = hybrid_oracle( s_logits, t_logits, targets )
+
+    # Student loss .
+    ce_loss = label_smoothing_ce_loss( s_logits, targets, args )
+    abstention_loss = osp_loss( s_logits, targets, args, y_one_hot )
+
+    # DiSK losses
+    d_loss = disk_loss( s_logits, t_logits, targets, disk_gate, args, y_one_hot )
+    d_budget = disk_budget_loss( args, disk_gate, s_logits, t_pred, n_incorrect )
+
+    # Hybrid Router loss
+    h_router_loss = hybrid_router_loss( hybrid_gate, oracle, args )
+

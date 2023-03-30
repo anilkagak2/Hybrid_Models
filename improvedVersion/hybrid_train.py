@@ -441,7 +441,6 @@ def main():
         print_model_info(global_model, args.global_model)
         print_model_info(disk_router, args.disk_router)
         print_model_info(hybrid_router, args.hybrid_router)
-    assert(1==2)
 
     data_config = resolve_data_config(vars(args), pretrained_cfg=model.default_cfg, model=model, verbose=utils.is_primary(args))
     global_data_config = resolve_data_config(vars(args), pretrained_cfg=global_model.default_cfg, model=global_model, verbose=utils.is_primary(args))
