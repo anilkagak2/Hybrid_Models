@@ -27,9 +27,11 @@ from functools import partial
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.utils
 import yaml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
+from torch.distributions import Categorical
 
 from timm import utils
 from timm.data import create_dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
@@ -781,13 +783,24 @@ def main():
         _logger.info(
             f'Scheduled epochs: {num_epochs}. LR stepped per {"epoch" if lr_scheduler.t_in_epochs else "update"}.')
 
-    eval_metrics = validate(
+    eval_metrics, all_tensors = validate(
                 model, global_model, disk_router, hybrid_router,
                 loader_eval,
                 validate_loss_fn,
                 args,
+                compute_tensors=True,
                 amp_autocast=amp_autocast,
             )
+    if utils.is_primary(args):
+        all_s_pred, all_t_pred, all_y_true, all_s_entropy, all_hybrid_gate, all_disk_gate = all_tensors
+        print('all_s_pred', all_s_pred.shape)
+        print('all_y_true', all_y_true.shape)
+
+        s_acc = torch.mean( (all_s_pred == all_y_true) * 1. )
+        t_acc = torch.mean( (all_t_pred == all_y_true) * 1. )
+        print('s_acc ', s_acc)
+        print('t_acc ', t_acc)
+    
     assert(1==2)
 
     try:
@@ -818,7 +831,7 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            eval_metrics = validate(
+            eval_metrics, _ = validate(
                 model, global_model, disk_router, hybrid_router,
                 loader_eval,
                 validate_loss_fn,
@@ -830,7 +843,7 @@ def main():
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                     utils.distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
 
-                ema_eval_metrics = validate(
+                ema_eval_metrics, _ = validate(
                     model_ema.module,
                     loader_eval,
                     validate_loss_fn,
@@ -999,12 +1012,30 @@ def train_one_epoch(
     return OrderedDict([('loss', losses_m.avg)])
 
 
+def gather_new_tensor(args, s_pred, all_s_pred):
+    if args.distributed:
+        s_pred_list = [ torch.zeros_like(s_pred) for _ in range(args.world_size) ]
+        if utils.is_primary(args):
+            torch.distributed.gather( s_pred, s_pred_list )
+        else:
+            torch.distributed.gather( s_pred )
+
+    if args.distributed:
+        if utils.is_primary(args):
+            for t1 in s_pred_list:
+                all_s_pred = torch.cat( (all_s_pred, t1), dim=0 )
+    else:
+        all_s_pred = torch.cat( (all_s_pred, s_pred), dim=0 )
+
+    return all_s_pred
+
 def validate(
         model,
         global_model, disk_router, hybrid_router,
         loader,
         loss_fn,
         args,
+        compute_tensors=False,
         device=torch.device('cuda'),
         amp_autocast=suppress,
         log_suffix=''
@@ -1018,8 +1049,17 @@ def validate(
     Ttop1_m = utils.AverageMeter()
     Ttop5_m = utils.AverageMeter()
 
+    all_s_pred = torch.tensor( [], dtype=torch.int64, device=device )
+    all_t_pred = torch.tensor( [], dtype=torch.int64, device=device )
+    all_y_true = torch.tensor( [], dtype=torch.int64, device=device )
+    all_s_entropy = torch.tensor( [], dtype=torch.float32, device=device )
+    all_hybrid_gate = torch.tensor( [], dtype=torch.float32, device=device )
+    all_disk_gate = torch.tensor( [], dtype=torch.float32, device=device )
+
     model.eval()
     global_model.eval()
+    disk_router.eval()
+    hybrid_router.eval()
 
     end = time.time()
     last_idx = len(loader) - 1
@@ -1035,7 +1075,8 @@ def validate(
                 g_input = g_input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                s_logits, t_logits, hybrid_gate, disk_gate = execute_network( model, global_model, disk_router, hybrid_router, 
+                s_logits, t_logits, hybrid_gate, disk_gate = execute_network( 
+                       model, global_model, disk_router, hybrid_router, 
                        input, g_input, args, train=False )
                 output, g_output = s_logits, t_logits
                 #output, _ = model(input)
@@ -1050,6 +1091,20 @@ def validate(
                 if reduce_factor > 1:
                     output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                     target = target[0:target.size(0):reduce_factor]
+
+                if compute_tensors:
+                  softmax = F.softmax( s_logits, dim=1 )
+                  entropy = Categorical( probs=softmax ).entropy()
+
+                  s_pred = torch.argmax( s_logits, dim=1 )
+                  t_pred = torch.argmax( t_logits, dim=1 )
+
+                  all_s_pred = gather_new_tensor(args, s_pred, all_s_pred)
+                  all_t_pred = gather_new_tensor(args, t_pred, all_t_pred)
+                  all_y_true = gather_new_tensor(args, target, all_y_true)
+                  all_s_entropy = gather_new_tensor(args, entropy, all_s_entropy)
+                  all_hybrid_gate = gather_new_tensor(args, hybrid_gate, all_hybrid_gate)
+                  all_disk_gate = gather_new_tensor(args, disk_gate, all_disk_gate)
 
                 loss = loss_fn(output, target)
                 Tloss = loss_fn(g_output, target)
@@ -1100,8 +1155,8 @@ def validate(
                 )
 
     metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
-
-    return metrics
+    all_tensors = (all_s_pred, all_t_pred, all_y_true, all_s_entropy, all_hybrid_gate, all_disk_gate)
+    return metrics, all_tensors
 
 
 if __name__ == '__main__':
