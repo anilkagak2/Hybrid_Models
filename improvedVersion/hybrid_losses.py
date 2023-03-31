@@ -23,7 +23,8 @@ def osp_loss( logits, targets, args, y_one_hot, weights ):
     loss_pos = (1./n_pos) * torch.sum( - weights * y_input * torch.log( y_out + tol ), dim=0 )
     loss_neg = (1./n_neg) * torch.sum( - weights * (1-y_input) * torch.log( 1-y_out + tol ), dim=0 )
 
-    xent = torch.sum(loss_pos + loss_neg) 
+    #xent = torch.sum(loss_pos + loss_neg) 
+    xent = torch.mean(loss_pos + loss_neg) 
     return xent
 
 # DiSK : Distilling Scaffolded Knowledge
