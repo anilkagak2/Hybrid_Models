@@ -73,14 +73,6 @@ def hybrid_oracle( s_logits, t_logits, targets ):
     n_incorrect = torch.sum( (targets != s_pred) * 1. )
     return oracle, s_pred, t_pred, n_incorrect
 
-def hybrid_router_loss( router, oracle, args ):
-    oracle = oracle.float()
-    router = router.view((-1))
-    #clf_loss = F.binary_cross_entropy( router, oracle )
-    clf_loss = F.binary_cross_entropy_with_logits( router, oracle )
-    cov_loss = F.relu( torch.mean( router ) - args.cov ) 
-    return clf_loss + cov_loss
-
 def hybrid_loss( s_logits, t_logits, disk_gate, hybrid_gate, targets, args ):
     y_one_hot = F.one_hot( targets, args.num_classes )
     oracle, s_pred, t_pred, n_incorrect = hybrid_oracle( s_logits, t_logits, targets )
@@ -106,11 +98,17 @@ def hybrid_loss( s_logits, t_logits, disk_gate, hybrid_gate, targets, args ):
     d_budget = disk_budget_loss( args, disk_gate, s_logits, t_pred, n_incorrect )
 
     # Hybrid Router loss
-    h_router_loss = hybrid_router_loss( hybrid_gate, oracle, args )
+    #h_router_loss = hybrid_router_loss( hybrid_gate, oracle, args )
+    oracle = oracle.float()
+    router = hybrid_gate.view((-1))
+    #clf_loss = F.binary_cross_entropy( router, oracle )
+    router_clf = F.binary_cross_entropy_with_logits( router, oracle )
+    router_cov = F.relu( torch.mean( router ) - args.cov ) 
 
-    loss = h_router_loss \
-         + d_budget + d_loss \
-         + ce_loss + abstention_loss 
 
-    return loss
+    loss = d_budget + d_loss \
+         + ce_loss + abstention_loss \
+         + router_clf + router_cov
+
+    return loss, ce_loss, abstention_loss, d_loss, d_budget, router_clf, router_cov 
 

@@ -928,6 +928,13 @@ def train_one_epoch(
     data_time_m = utils.AverageMeter()
     losses_m = utils.AverageMeter()
 
+    ce_m = utils.AverageMeter()
+    abs_m = utils.AverageMeter()
+    disk_m = utils.AverageMeter()
+    disk_budget_m = utils.AverageMeter()
+    router_clf_m = utils.AverageMeter()
+    router_cov_m = utils.AverageMeter()
+
     model.train()
     global_model.eval()
     disk_router.train()
@@ -957,10 +964,18 @@ def train_one_epoch(
             #g_output, _ = global_model(input)
 
             #loss = loss_fn(output, target)
-            loss = hybrid_loss( s_logits, t_logits, disk_gate, hybrid_gate, target, args )
+            loss, ce_loss, abs_loss, d_loss, d_budget, router_clf, router_cov = hybrid_loss( 
+                       s_logits, t_logits, disk_gate, hybrid_gate, target, args )
 
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
+
+            ce_m.update(ce_loss.item(), input.size(0))
+            abs_m.update(abs_loss.item(), input.size(0))
+            disk_m.update(d_loss.item(), input.size(0))
+            disk_budget_m.update(d_budget.item(), input.size(0))
+            router_clf_m.update(router_clf.item(), input.size(0))
+            router_cov_m.update(router_cov.item(), input.size(0))
 
         optimizer.zero_grad()
         if loss_scaler is not None:
@@ -996,6 +1011,20 @@ def train_one_epoch(
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), input.size(0))
 
+                reduced_ce_loss = utils.reduce_tensor(ce_loss.data, args.world_size)
+                reduced_abs_loss = utils.reduce_tensor(abs_loss.data, args.world_size)
+                reduced_d_loss = utils.reduce_tensor(d_loss.data, args.world_size)
+                reduced_d_budget = utils.reduce_tensor(d_budget.data, args.world_size)
+                reduced_router_clf = utils.reduce_tensor(router_clf.data, args.world_size)
+                reduced_router_cov = utils.reduce_tensor(router_cov.data, args.world_size)
+
+                ce_m.update(reduced_ce_loss.item(), input.size(0))
+                abs_m.update(reduced_abs_loss.item(), input.size(0))
+                disk_m.update(reduced_d_loss.item(), input.size(0))
+                disk_budget_m.update(reduced_d_budget.item(), input.size(0))
+                router_clf_m.update(reduced_router_clf.item(), input.size(0))
+                router_cov_m.update(reduced_router_cov.item(), input.size(0))
+
             if utils.is_primary(args):
                 _logger.info(
                     'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
@@ -1003,6 +1032,12 @@ def train_one_epoch(
                     'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                     '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
                     'LR: {lr:.3e}  '
+                    'CE: ({ce_loss.avg:#.3g})  '
+                    'ABS: ({abs_loss.avg:#.3g})  '
+                    'DiSK: ({disk_loss.avg:#.3g})  '
+                    'DiSK-b: ({disk_budget.avg:#.3g})  '
+                    'R-Clf: ({router_clf.avg:#.3g})  '
+                    'R-Cov: ({router_cov.avg:#.3g})  '
                     'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         epoch,
                         batch_idx, len(loader),
@@ -1011,7 +1046,9 @@ def train_one_epoch(
                         batch_time=batch_time_m,
                         rate=input.size(0) * args.world_size / batch_time_m.val,
                         rate_avg=input.size(0) * args.world_size / batch_time_m.avg,
-                        lr=lr,
+                        lr=lr, 
+                        ce_loss=ce_m, abs_loss=abs_m, disk_loss=disk_m, disk_budget=disk_budget_m, 
+                        router_clf=router_clf_m, router_cov=router_cov_m,
                         data_time=data_time_m)
                 )
 
