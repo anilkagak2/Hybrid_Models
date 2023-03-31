@@ -69,12 +69,15 @@ def label_smoothing_ce_loss( logits, targets, args, weights ):
 def hybrid_oracle( s_logits, t_logits, targets ):
     t_pred = torch.argmax( t_logits, dim=1 )
     s_pred = torch.argmax( s_logits, dim=1 )
-    oracle = torch.logical_or( t_pred != targets, s_pred == targets )
+    oracle = torch.logical_or( t_pred != targets, s_pred == targets ) * 1
     n_incorrect = torch.sum( (targets != s_pred) * 1. )
     return oracle, s_pred, t_pred, n_incorrect
 
 def hybrid_router_loss( router, oracle, args ):
-    clf_loss = F.binary_cross_entropy( router, oracle )
+    oracle = oracle.float()
+    router = router.view((-1))
+    #clf_loss = F.binary_cross_entropy( router, oracle )
+    clf_loss = F.binary_cross_entropy_with_logits( router, oracle )
     cov_loss = F.relu( torch.mean( router ) - args.cov ) 
     return clf_loss + cov_loss
 
@@ -87,6 +90,8 @@ def hybrid_loss( s_logits, t_logits, disk_gate, hybrid_gate, targets, args ):
 
     #s_weights = 1. + hybrid_gate
     #t_weights = 2. - hybrid_gate
+    s_weights = s_weights.view((-1, 1))
+    t_weights = t_weights.view((-1, 1))
 
     # Student loss .
     ce_loss = label_smoothing_ce_loss( s_logits, targets, args, s_weights )

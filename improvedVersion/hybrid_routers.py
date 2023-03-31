@@ -66,7 +66,7 @@ class Hybrid_Router(nn.Module):
                 nn.BatchNorm1d( n_labels ),
                 nn.ReLU(),
                 nn.Linear(n_labels, 1), # bias=True),
-                nn.Sigmoid(),
+                #nn.Sigmoid(),
             )
 
     def process_logits(self, logits):

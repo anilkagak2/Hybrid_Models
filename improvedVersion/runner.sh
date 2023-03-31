@@ -12,7 +12,7 @@ teacher='mobilenetv3_large_100'
 disk_router='DiSK_Router'
 hybrid_router='Hybrid_Router'
 
-epochs=90
+epochs=10
 batch_size=64
 
 CUDA_VISIBLE_DEVICES='0,1,2,3' ./distributed_train.sh 4 $data -b $batch_size \

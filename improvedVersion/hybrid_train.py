@@ -536,7 +536,7 @@ def main():
                 f'and global batch size ({global_batch_size}) with {args.lr_base_scale} scaling.')
 
     optimizer = create_optimizer_v2(
-        model,
+        list(model.parameters()) + list(disk_router.parameters()) + list(hybrid_router.parameters()), #model,
         **optimizer_kwargs(cfg=args),
         **args.opt_kwargs,
     )
@@ -807,8 +807,8 @@ def main():
                 compute_tensors=True,
                 amp_autocast=amp_autocast,
             )
-    if utils.is_primary(args):
-        eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats )
+    #if utils.is_primary(args):
+    #    eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats )
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -1125,6 +1125,9 @@ def validate(
 
                   s_pred = torch.argmax( s_logits, dim=1 )
                   t_pred = torch.argmax( t_logits, dim=1 )
+
+                  hybrid_gate = torch.sigmoid( hybrid_gate )
+                  hybrid_gate = hybrid_gate.view((-1))
 
                   all_s_pred = gather_new_tensor(args, s_pred, all_s_pred)
                   all_t_pred = gather_new_tensor(args, t_pred, all_t_pred)
