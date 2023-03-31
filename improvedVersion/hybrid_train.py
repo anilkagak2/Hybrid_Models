@@ -46,7 +46,8 @@ from hybrid_models import get_model_with_stats, execute_network
 from hybrid_dataset import hybrid_create_dataset
 from hybrid_loader import hybrid_create_loader 
 from hybrid_routers import get_router
-from hybrid_eval_utils import eval_hybrid_cov_acc
+from hybrid_eval_utils import eval_hybrid_cov_acc, eval_hybrid_cov_acc_routing
+from hybrid_losses import hybrid_loss
 
 try:
     from apex import amp
@@ -106,6 +107,16 @@ group.add_argument('--dataset-download', action='store_true', default=False,
                    help='Allow download of dataset for torch/ and tfds/ datasets that support it.')
 group.add_argument('--class-map', default='', type=str, metavar='FILENAME',
                    help='path to class to idx mapping file (default: "")')
+
+group = parser.add_argument_group('Hybrid Loss parameters')
+group.add_argument('--topK', default=20, type=int, help='Top-K in DiSK loss')
+group.add_argument('--temp_s', default=4., type=float, help='temperature student in DiSK loss')
+group.add_argument('--temp_t', default=4., type=float, help='temperature teacher in DiSK loss')
+group.add_argument('--max_ce', default=2., type=float, help='max-ce in DiSK loss')
+group.add_argument('--lmbda', default=.5, type=float, help='lambda in DiSK loss')
+group.add_argument('--budget_g', default=.2, type=float, help='Budget in DiSK loss')
+
+group.add_argument('--cov', default=.7, type=float, help='Coverage in Hybrid Router loss')
 
 # Model parameters
 group = parser.add_argument_group('Model parameters')
@@ -798,9 +809,6 @@ def main():
             )
     if utils.is_primary(args):
         eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats )
-    
-    #assert(1==2)
-    return
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -811,7 +819,7 @@ def main():
 
             train_metrics = train_one_epoch(
                 epoch,
-                model, global_model,
+                model, global_model, disk_router, hybrid_router,
                 loader_train,
                 optimizer,
                 train_loss_fn,
@@ -843,7 +851,7 @@ def main():
                     utils.distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
 
                 ema_eval_metrics, _ = validate(
-                    model_ema.module,
+                    model_ema.module, global_model, disk_router, hybrid_router,
                     loader_eval,
                     validate_loss_fn,
                     args,
@@ -879,11 +887,23 @@ def main():
     if best_metric is not None:
         _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
+    ema_eval_metrics, all_tensors = validate(
+                    model_ema.module, global_model, disk_router, hybrid_router,
+                    loader_eval,
+                    validate_loss_fn,
+                    args,
+                    compute_tensors=True,
+                    amp_autocast=amp_autocast,
+                    log_suffix=' (EMA)',
+                )
+    if utils.is_primary(args):
+        eval_hybrid_cov_acc_routing( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats )
+
 
 def train_one_epoch(
         epoch,
         model,
-        global_model,
+        global_model, disk_router, hybrid_router,
         loader,
         optimizer,
         loss_fn,
@@ -910,6 +930,8 @@ def train_one_epoch(
 
     model.train()
     global_model.eval()
+    disk_router.train()
+    hybrid_router.train()
 
     end = time.time()
     num_batches_per_epoch = len(loader)
@@ -927,9 +949,15 @@ def train_one_epoch(
             g_input = g_input.contiguous(memory_format=torch.channels_last)
 
         with amp_autocast():
-            output, _ = model(input)
-            g_output, _ = global_model(input)
-            loss = loss_fn(output, target)
+            s_logits, t_logits, hybrid_gate, disk_gate = execute_network( 
+                       model, global_model, disk_router, hybrid_router, 
+                       input, g_input, args, train=True )
+            output, g_output = s_logits, t_logits
+            #output, _ = model(input)
+            #g_output, _ = global_model(input)
+
+            #loss = loss_fn(output, target)
+            loss = hybrid_loss( s_logits, t_logits, disk_gate, hybrid_gate, target, args )
 
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))

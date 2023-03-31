@@ -38,18 +38,29 @@ def eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_s
     add_standalone_stats( pd_data, model_stats, args.model )
     add_standalone_stats( pd_data, global_model_stats, args.global_model )
 
-    pretty_print_cov_acc( pd_data )
-    
     for scheme in ['agreement', 'margin', 'margin-upper']:
         add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme )    
 
     cov_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.]
-    for scheme in ['entropy', 'gate']:
+    for scheme in ['entropy']: #, 'gate']:
       for cov in cov_list:
         add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme, cov=cov )    
 
     pretty_print_cov_acc( pd_data )
 
+
+def eval_hybrid_cov_acc_routing( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats  ):
+    all_s_pred, all_t_pred, all_y_true, all_s_entropy, all_hybrid_gate, all_disk_gate = all_tensors
+
+    s_acc = torch.mean( (all_s_pred == all_y_true) * 1. ) * 100.
+    t_acc = torch.mean( (all_t_pred == all_y_true) * 1. ) * 100.
+
+    cov_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.]
+    for scheme in ['gate']:
+      for cov in cov_list:
+        add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme, cov=cov )    
+
+    pretty_print_cov_acc( pd_data )
 
 def get_entropy_thr_at_cov(y_entropy, target_cov=0.9, num=50, low=0, high=5):
     best_thr=-10.0 #-1.84
