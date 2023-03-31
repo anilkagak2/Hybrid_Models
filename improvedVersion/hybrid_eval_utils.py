@@ -43,6 +43,11 @@ def eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_s
     for scheme in ['agreement', 'margin', 'margin-upper']:
         add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme )    
 
+    cov_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.]
+    for scheme in ['entropy', 'gate']:
+      for cov in cov_list:
+        add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme, cov=cov )    
+
     pretty_print_cov_acc( pd_data )
 
 

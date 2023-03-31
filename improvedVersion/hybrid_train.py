@@ -799,7 +799,8 @@ def main():
     if utils.is_primary(args):
         eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_stats, hybrid_model_stats )
     
-    assert(1==2)
+    #assert(1==2)
+    return
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -1101,8 +1102,8 @@ def validate(
                   all_t_pred = gather_new_tensor(args, t_pred, all_t_pred)
                   all_y_true = gather_new_tensor(args, target, all_y_true)
                   all_s_entropy = gather_new_tensor(args, entropy, all_s_entropy)
-                  all_hybrid_gate = gather_new_tensor(args, hybrid_gate, all_hybrid_gate)
-                  all_disk_gate = gather_new_tensor(args, disk_gate, all_disk_gate)
+                  all_hybrid_gate = gather_new_tensor(args, torch.squeeze(hybrid_gate), all_hybrid_gate)
+                  all_disk_gate = gather_new_tensor(args, torch.squeeze(disk_gate), all_disk_gate)
 
                 loss = loss_fn(output, target)
                 Tloss = loss_fn(g_output, target)
