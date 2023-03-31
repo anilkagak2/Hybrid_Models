@@ -43,6 +43,7 @@ from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 
 from hybrid_models import get_model_with_stats, execute_network
+from hybrid_checkpoint_saver import HybridCheckpointSaver
 from hybrid_dataset import hybrid_create_dataset
 from hybrid_loader import hybrid_create_loader 
 from hybrid_routers import get_router
@@ -754,8 +755,9 @@ def main():
             ])
         output_dir = utils.get_outdir(args.output if args.output else './output/train', exp_name)
         decreasing = True if eval_metric == 'loss' else False
-        saver = utils.CheckpointSaver(
-            model=model,
+        #saver = utils.CheckpointSaver(
+        saver = HybridCheckpointSaver(
+            model=model, global_model=global_model, disk_router=disk_router, hybrid_router=hybrid_router,
             optimizer=optimizer,
             args=args,
             model_ema=model_ema,
@@ -804,7 +806,7 @@ def main():
                 loader_eval,
                 validate_loss_fn,
                 args,
-                compute_tensors=True,
+                compute_tensors=False, #True,
                 amp_autocast=amp_autocast,
             )
     #if utils.is_primary(args):
