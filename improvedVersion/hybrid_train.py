@@ -43,7 +43,7 @@ from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 
 from hybrid_models import get_model_with_stats, execute_network
-from hybrid_checkpoint_saver import HybridCheckpointSaver
+from hybrid_checkpoint_saver import HybridCheckpointSaver, resume_hybrid_checkpoint
 from hybrid_dataset import hybrid_create_dataset
 from hybrid_loader import hybrid_create_loader 
 from hybrid_routers import get_router
@@ -570,8 +570,8 @@ def main():
     # optionally resume from a checkpoint
     resume_epoch = None
     if args.resume:
-        resume_epoch = resume_checkpoint(
-            model,
+        resume_epoch = resume_hybrid_checkpoint(
+            model, global_model, disk_router, hybrid_router, 
             args.resume,
             optimizer=None if args.no_resume_opt else optimizer,
             loss_scaler=None if args.no_resume_opt else loss_scaler,
@@ -755,7 +755,6 @@ def main():
             ])
         output_dir = utils.get_outdir(args.output if args.output else './output/train', exp_name)
         decreasing = True if eval_metric == 'loss' else False
-        #saver = utils.CheckpointSaver(
         saver = HybridCheckpointSaver(
             model=model, global_model=global_model, disk_router=disk_router, hybrid_router=hybrid_router,
             optimizer=optimizer,

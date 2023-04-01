@@ -9,11 +9,12 @@ import glob
 import operator
 import os
 import logging
+from typing import Any, Callable, Dict, Optional, Union
 
 import torch
 
 from timm.utils.model import unwrap_model, get_state_dict
-
+from timm.models import clean_state_dict, load_state_dict, load_checkpoint, remap_state_dict
 
 _logger = logging.getLogger(__name__)
 
@@ -165,3 +166,61 @@ class HybridCheckpointSaver:
         files = glob.glob(recovery_path + '*' + self.extension)
         files = sorted(files)
         return files[0] if len(files) else ''
+
+
+def load_one_model(checkpoint, model, state_dict_name, log_info):
+    if model is not None and state_dict_name in checkpoint:
+        if log_info:
+            _logger.info('Restoring ' + state_dict_name + ' state from checkpoint...')
+        state_dict = clean_state_dict(checkpoint[state_dict_name])
+        model.load_state_dict(state_dict)
+
+def resume_hybrid_checkpoint(
+        model: torch.nn.Module,
+        global_model: torch.nn.Module,
+        disk_router: torch.nn.Module,
+        hybrid_router: torch.nn.Module,
+        checkpoint_path: str,
+        optimizer: torch.optim.Optimizer = None,
+        loss_scaler: Any = None,
+        log_info: bool = True,
+):
+    resume_epoch = None
+    if os.path.isfile(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+            if log_info:
+                _logger.info('Restoring model state from checkpoint...')
+            state_dict = clean_state_dict(checkpoint['state_dict'])
+            model.load_state_dict(state_dict)
+
+            load_one_model( checkpoint, global_model, 'global_state_dict', log_info )
+            load_one_model( checkpoint, disk_router, 'disk_router_state_dict', log_info )
+            load_one_model( checkpoint, hybrid_router, 'hybrid_router_state_dict', log_info )
+
+            if optimizer is not None and 'optimizer' in checkpoint:
+                if log_info:
+                    _logger.info('Restoring optimizer state from checkpoint...')
+                optimizer.load_state_dict(checkpoint['optimizer'])
+
+            if loss_scaler is not None and loss_scaler.state_dict_key in checkpoint:
+                if log_info:
+                    _logger.info('Restoring AMP loss scaler state from checkpoint...')
+                loss_scaler.load_state_dict(checkpoint[loss_scaler.state_dict_key])
+
+            if 'epoch' in checkpoint:
+                resume_epoch = checkpoint['epoch']
+                if 'version' in checkpoint and checkpoint['version'] > 1:
+                    resume_epoch += 1  # start at the next epoch, old checkpoints incremented before save
+
+            if log_info:
+                _logger.info("Loaded checkpoint '{}' (epoch {})".format(checkpoint_path, checkpoint['epoch']))
+        else:
+            model.load_state_dict(checkpoint)
+            if log_info:
+                _logger.info("Loaded checkpoint '{}'".format(checkpoint_path))
+        return resume_epoch
+    else:
+        _logger.error("No checkpoint found at '{}'".format(checkpoint_path))
+        raise FileNotFoundError()
+
