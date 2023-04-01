@@ -22,7 +22,7 @@ CUDA_VISIBLE_DEVICES='0,1,2,3' ./distributed_train.sh 4 $data -b $batch_size \
         --opt adamw  --warmup-lr 1e-6 \
 	--sched cosine --epochs $epochs --lr 1e-4 --amp --weight-decay 5e-4 \
 	--model-ema --model-ema-decay 0.9999 --aa rand-m9-mstd0.5-inc1 \
-        --pretrained --resume $ckpt #--torchcompile
+        --pretrained #--resume $ckpt #--torchcompile
 
 # torchcompile is supported only on GPU with capabilities >= 7.0
 

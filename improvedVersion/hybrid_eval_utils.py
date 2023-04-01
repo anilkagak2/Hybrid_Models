@@ -41,7 +41,7 @@ def eval_hybrid_cov_acc( args, all_tensors, pd_data, model_stats, global_model_s
     for scheme in ['agreement', 'margin', 'margin-upper']:
         add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme )    
 
-    cov_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.]
+    cov_list = [ 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, ]
     for scheme in ['entropy']: #, 'gate']:
       for cov in cov_list:
         add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme, cov=cov )    
@@ -55,7 +55,10 @@ def eval_hybrid_cov_acc_routing( args, all_tensors, pd_data, model_stats, global
     s_acc = torch.mean( (all_s_pred == all_y_true) * 1. ) * 100.
     t_acc = torch.mean( (all_t_pred == all_y_true) * 1. ) * 100.
 
-    cov_list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.]
+    model_stats[args.model + 'valid_acc1'] = s_acc.item()
+    global_model_stats[args.global_model + 'valid_acc1'] = t_acc.item()
+
+    cov_list = [ 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, ]
     for scheme in ['gate']:
       for cov in cov_list:
         add_hybrid_stats_in_table( pd_data, args, all_tensors, model_stats, global_model_stats, hybrid_model_stats, scheme=scheme, cov=cov )    
