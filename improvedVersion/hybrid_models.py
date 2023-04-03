@@ -30,6 +30,14 @@ def mbv3_forward_head(model, x):
     x = model.classifier(x)
     return x, ft
 
+def vit_forward_head(model, x):
+    if model.global_pool:
+        x = x[:, model.num_prefix_tokens:].mean(dim=1) if model.global_pool == 'avg' else x[:, 0]
+    ft = x
+    x = model.fc_norm(x)
+    x = model.head(x)
+    return x, ft
+
 class TimmModel(nn.Module):
     def __init__( self, args, model_name, in_chans=3 ):
         super(TimmModel, self).__init__()
@@ -54,6 +62,8 @@ class TimmModel(nn.Module):
             self.forward_head = mbv3_forward_head
         elif 'efficientnet' in model_name:
             self.forward_head = efficientnet_forward_head
+        elif 'vit_' in model_name:
+            self.forward_head = vit_forward_head
         else:
             raise NotImplementedError
 

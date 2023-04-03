@@ -6,14 +6,18 @@ data='/Data/anil_datasets/imagenet-1000/'
 #student='vit_tiny_patch16_224'
 #teacher='vit_large_patch16_224'
 
-student='tf_mobilenetv3_small_100'
-teacher='mobilenetv3_large_100'
+#student='tf_mobilenetv3_small_100'
+#teacher='mobilenetv3_large_100'
+#batch_size=512
+
+student='vit_tiny_patch16_224'
+teacher='vit_large_patch16_224'
 
 disk_router='DiSK_Router'
 hybrid_router='Hybrid_Router'
 
 epochs=100
-batch_size=512
+batch_size=256 #512
 ckpt='./output/train/20230331-192414-tf_mobilenetv3_small_100-224/last.pth.tar'
 
 CUDA_VISIBLE_DEVICES='0,1,2,3' ./distributed_train.sh 4 $data -b $batch_size \
