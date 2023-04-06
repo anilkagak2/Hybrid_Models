@@ -9,11 +9,12 @@ import glob
 import operator
 import os
 import logging
+from typing import Any, Callable, Dict, Optional, Union
 
 import torch
 
 from timm.utils.model import unwrap_model, get_state_dict
-
+from timm.models import clean_state_dict, load_state_dict, load_checkpoint, remap_state_dict
 
 _logger = logging.getLogger(__name__)
 
@@ -22,15 +23,10 @@ class HybridCheckpointSaver:
     def __init__(
             self,
             model,
-            global_model,
-            routing_model,
+            global_model, disk_router, hybrid_router,
             optimizer,
-            global_optimizer,
-            routing_optimizer,
             args=None,
             model_ema=None,
-            global_model_ema=None,
-            routing_model_ema=None,
             amp_scaler=None,
             checkpoint_prefix='checkpoint',
             recovery_prefix='recovery',
@@ -44,13 +40,10 @@ class HybridCheckpointSaver:
         self.model = model
         self.optimizer = optimizer
         self.global_model = global_model
-        self.global_optimizer = global_optimizer
-        self.routing_model = routing_model
-        self.routing_optimizer = routing_optimizer
+        self.disk_router = disk_router
+        self.hybrid_router = hybrid_router
         self.args = args
         self.model_ema = model_ema
-        self.global_model_ema = global_model_ema
-        self.routing_model_ema = routing_model_ema
         self.amp_scaler = amp_scaler
 
         # state
@@ -113,26 +106,29 @@ class HybridCheckpointSaver:
             'epoch': epoch,
             'arch': type(self.model).__name__.lower(),
             'global_arch': type(self.global_model).__name__.lower(),
+            'disk_router_arch': type(self.disk_router).__name__.lower(),
+            'hybrid_router_arch': type(self.hybrid_router).__name__.lower(),
             'state_dict': get_state_dict(self.model, self.unwrap_fn),
-            'optimizer': self.optimizer.state_dict(),
             'global_state_dict': get_state_dict(self.global_model, self.unwrap_fn),
-            'global_optimizer': self.global_optimizer.state_dict(),
-            'routing_state_dict': get_state_dict(self.routing_model, self.unwrap_fn),
-            'routing_optimizer': self.routing_optimizer.state_dict(),
+            'disk_router_state_dict': get_state_dict(self.disk_router, self.unwrap_fn),
+            'hybrid_router_state_dict': get_state_dict(self.hybrid_router, self.unwrap_fn),
+            'optimizer': self.optimizer.state_dict(),
             'version': 2,  # version < 2 increments epoch before save
         }
         if self.args is not None:
             save_state['arch'] = self.args.model
             save_state['global_arch'] = self.args.global_model
+            save_state['disk_router_arch'] = self.args.disk_router
+            save_state['hybrid_router_arch'] = self.args.hybrid_router
             save_state['args'] = self.args
         if self.amp_scaler is not None:
             save_state[self.amp_scaler.state_dict_key] = self.amp_scaler.state_dict()
         if self.model_ema is not None:
             save_state['state_dict_ema'] = get_state_dict(self.model_ema, self.unwrap_fn)
-        if self.global_model_ema is not None:
-            save_state['global_state_dict_ema'] = get_state_dict(self.global_model_ema, self.unwrap_fn)
-        if self.routing_model_ema is not None:
-            save_state['routing_state_dict_ema'] = get_state_dict(self.routing_model_ema, self.unwrap_fn)
+        #if self.global_model_ema is not None:
+        #    save_state['global_state_dict_ema'] = get_state_dict(self.global_model_ema, self.unwrap_fn)
+        #if self.routing_model_ema is not None:
+        #    save_state['routing_state_dict_ema'] = get_state_dict(self.routing_model_ema, self.unwrap_fn)
         if metric is not None:
             save_state['metric'] = metric
         torch.save(save_state, save_path)
@@ -170,3 +166,61 @@ class HybridCheckpointSaver:
         files = glob.glob(recovery_path + '*' + self.extension)
         files = sorted(files)
         return files[0] if len(files) else ''
+
+
+def load_one_model(checkpoint, model, state_dict_name, log_info):
+    if model is not None and state_dict_name in checkpoint:
+        if log_info:
+            _logger.info('Restoring ' + state_dict_name + ' state from checkpoint...')
+        state_dict = clean_state_dict(checkpoint[state_dict_name])
+        model.load_state_dict(state_dict)
+
+def resume_hybrid_checkpoint(
+        model: torch.nn.Module,
+        global_model: torch.nn.Module,
+        disk_router: torch.nn.Module,
+        hybrid_router: torch.nn.Module,
+        checkpoint_path: str,
+        optimizer: torch.optim.Optimizer = None,
+        loss_scaler: Any = None,
+        log_info: bool = True,
+):
+    resume_epoch = None
+    if os.path.isfile(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+            if log_info:
+                _logger.info('Restoring model state from checkpoint...')
+            state_dict = clean_state_dict(checkpoint['state_dict'])
+            model.load_state_dict(state_dict)
+
+            load_one_model( checkpoint, global_model, 'global_state_dict', log_info )
+            load_one_model( checkpoint, disk_router, 'disk_router_state_dict', log_info )
+            load_one_model( checkpoint, hybrid_router, 'hybrid_router_state_dict', log_info )
+
+            if optimizer is not None and 'optimizer' in checkpoint:
+                if log_info:
+                    _logger.info('Restoring optimizer state from checkpoint...')
+                optimizer.load_state_dict(checkpoint['optimizer'])
+
+            if loss_scaler is not None and loss_scaler.state_dict_key in checkpoint:
+                if log_info:
+                    _logger.info('Restoring AMP loss scaler state from checkpoint...')
+                loss_scaler.load_state_dict(checkpoint[loss_scaler.state_dict_key])
+
+            if 'epoch' in checkpoint:
+                resume_epoch = checkpoint['epoch']
+                if 'version' in checkpoint and checkpoint['version'] > 1:
+                    resume_epoch += 1  # start at the next epoch, old checkpoints incremented before save
+
+            if log_info:
+                _logger.info("Loaded checkpoint '{}' (epoch {})".format(checkpoint_path, checkpoint['epoch']))
+        else:
+            model.load_state_dict(checkpoint)
+            if log_info:
+                _logger.info("Loaded checkpoint '{}'".format(checkpoint_path))
+        return resume_epoch
+    else:
+        _logger.error("No checkpoint found at '{}'".format(checkpoint_path))
+        raise FileNotFoundError()
+

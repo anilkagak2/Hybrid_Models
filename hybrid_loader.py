@@ -1,22 +1,31 @@
-
-
-
 """ Loader Factory, Fast Collate, CUDA Prefetcher
 
 Prefetcher and Fast Collate inspired by NVIDIA APEX example at
 https://github.com/NVIDIA/apex/commit/d5e2bb4bdeedd27b1dfaf5bb2b24d6c000dee9be#diff-cf86c282ff7fba81fad27a559379d5bf
 
-Hacked together by / Copyright 2020 Ross Wightman
-"""
+Hacked together by / Copyright 2019, Ross Wightman
 
+Added Hybrid Data loading by Anil Kag 
+"""
+import logging
+import random
+from contextlib import suppress
+from functools import partial
+from itertools import repeat
+from typing import Callable
+
+import torch
 import torch.utils.data
 import numpy as np
 
-from timm.data.transforms_factory import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.data.distributed_sampler import OrderedDistributedSampler
+from timm.data.dataset import IterableImageDataset
+from timm.data.distributed_sampler import OrderedDistributedSampler, RepeatAugSampler
 from timm.data.random_erasing import RandomErasing
 from timm.data.mixup import FastCollateMixup
+from timm.data.transforms_factory import create_transform
+
+_logger = logging.getLogger(__name__)
 
 
 def fast_collate(batch):
@@ -24,8 +33,6 @@ def fast_collate(batch):
     assert isinstance(batch[0], tuple)
     batch_size = len(batch)
     if isinstance(batch[0][0], tuple):
-        assert(1==2)
-        #print('tuple..')
         # This branch 'deinterleaves' and flattens tuples of input tensors into one tensor ordered by position
         # such that all tuple of position n will end up in a torch.split(tensor, batch_size) in nth position
         inner_tuple_size = len(batch[0][0])
@@ -49,8 +56,6 @@ def fast_collate(batch):
             g_tensor[i] += torch.from_numpy(batch[i][1])
         return tensor, g_tensor, targets
     elif isinstance(batch[0][0], torch.Tensor):
-        assert(1==2)
-        #print('tensor..')
         targets = torch.tensor([b[1] for b in batch], dtype=torch.int64)
         assert len(targets) == batch_size
         tensor = torch.zeros((batch_size, *batch[0][0].shape), dtype=torch.uint8)
@@ -61,51 +66,85 @@ def fast_collate(batch):
         assert False
 
 
+def adapt_to_chs(x, n):
+    if not isinstance(x, (tuple, list)):
+        x = tuple(repeat(x, n))
+    elif len(x) != n:
+        x_mean = np.mean(x).item()
+        x = (x_mean,) * n
+        _logger.warning(f'Pretrained mean/std different shape than model, using avg value {x}.')
+    else:
+        assert len(x) == n, 'normalization stats must match image channels'
+    return x
+
+
 class PrefetchLoader:
 
-    def __init__(self,
-                 loader,
-                 mean=IMAGENET_DEFAULT_MEAN,
-                 std=IMAGENET_DEFAULT_STD,
-                 g_mean=IMAGENET_DEFAULT_MEAN,
-                 g_std=IMAGENET_DEFAULT_STD,
-                 fp16=False,
-                 re_prob=0.,
-                 re_mode='const',
-                 re_count=1,
-                 re_num_splits=0):
+    def __init__(
+            self,
+            loader,
+            mean=IMAGENET_DEFAULT_MEAN,
+            std=IMAGENET_DEFAULT_STD,
+            g_mean=IMAGENET_DEFAULT_MEAN,
+            g_std=IMAGENET_DEFAULT_STD,
+            channels=3,
+            device=torch.device('cuda'),
+            img_dtype=torch.float32,
+            fp16=False,
+            re_prob=0.,
+            re_mode='const',
+            re_count=1,
+            re_num_splits=0):
+
+        mean = adapt_to_chs(mean, channels)
+        std = adapt_to_chs(std, channels)
+        g_mean = adapt_to_chs(g_mean, channels)
+        g_std = adapt_to_chs(g_std, channels)
+        normalization_shape = (1, channels, 1, 1)
+
         self.loader = loader
-        self.mean = torch.tensor([x * 255 for x in mean]).cuda().view(1, 3, 1, 1)
-        self.std = torch.tensor([x * 255 for x in std]).cuda().view(1, 3, 1, 1)
-        self.g_mean = torch.tensor([x * 255 for x in g_mean]).cuda().view(1, 3, 1, 1)
-        self.g_std = torch.tensor([x * 255 for x in g_std]).cuda().view(1, 3, 1, 1)
-        self.fp16 = fp16
+        self.device = device
         if fp16:
-            self.mean = self.mean.half()
-            self.std = self.std.half()
-            self.g_mean = self.g_mean.half()
-            self.g_std = self.g_std.half()
+            # fp16 arg is deprecated, but will override dtype arg if set for bwd compat
+            img_dtype = torch.float16
+        self.img_dtype = img_dtype
+        self.mean = torch.tensor(
+            [x * 255 for x in mean], device=device, dtype=img_dtype).view(normalization_shape)
+        self.std = torch.tensor(
+            [x * 255 for x in std], device=device, dtype=img_dtype).view(normalization_shape)
+        self.g_mean = torch.tensor(
+            [x * 255 for x in g_mean], device=device, dtype=img_dtype).view(normalization_shape)
+        self.g_std = torch.tensor(
+            [x * 255 for x in g_std], device=device, dtype=img_dtype).view(normalization_shape)
         if re_prob > 0.:
             self.random_erasing = RandomErasing(
-                probability=re_prob, mode=re_mode, max_count=re_count, num_splits=re_num_splits)
+                probability=re_prob,
+                mode=re_mode,
+                max_count=re_count,
+                num_splits=re_num_splits,
+                device=device,
+            )
         else:
             self.random_erasing = None
+        self.is_cuda = torch.cuda.is_available() and device.type == 'cuda'
 
     def __iter__(self):
-        stream = torch.cuda.Stream()
         first = True
+        if self.is_cuda:
+            stream = torch.cuda.Stream()
+            stream_context = partial(torch.cuda.stream, stream=stream)
+        else:
+            stream = None
+            stream_context = suppress
 
         for next_input, next_g_input, next_target in self.loader:
-            with torch.cuda.stream(stream):
-                next_input = next_input.cuda(non_blocking=True)
-                next_g_input = next_g_input.cuda(non_blocking=True)
-                next_target = next_target.cuda(non_blocking=True)
-                if self.fp16:
-                    next_input = next_input.half().sub_(self.mean).div_(self.std)
-                    next_g_input = next_g_input.half().sub_(self.g_mean).div_(self.g_std)
-                else:
-                    next_input = next_input.float().sub_(self.mean).div_(self.std)
-                    next_g_input = next_g_input.float().sub_(self.g_mean).div_(self.g_std)
+
+            with stream_context():
+                next_input = next_input.to(device=self.device, non_blocking=True)
+                next_g_input = next_g_input.to(device=self.device, non_blocking=True)
+                next_target = next_target.to(device=self.device, non_blocking=True)
+                next_input = next_input.to(self.img_dtype).sub_(self.mean).div_(self.std)
+                next_g_input = next_g_input.to(self.img_dtype).sub_(self.g_mean).div_(self.g_std)
                 if self.random_erasing is not None:
                     next_input = self.random_erasing(next_input)
                     next_g_input = self.random_erasing(next_g_input)
@@ -115,7 +154,9 @@ class PrefetchLoader:
             else:
                 first = False
 
-            torch.cuda.current_stream().wait_stream(stream)
+            if stream is not None:
+                torch.cuda.current_stream().wait_stream(stream)
+
             input = next_input
             g_input = next_g_input
             target = next_target
@@ -146,6 +187,22 @@ class PrefetchLoader:
             self.loader.collate_fn.mixup_enabled = x
 
 
+def _worker_init(worker_id, worker_seeding='all'):
+    worker_info = torch.utils.data.get_worker_info()
+    assert worker_info.id == worker_id
+    if isinstance(worker_seeding, Callable):
+        seed = worker_seeding(worker_info)
+        random.seed(seed)
+        torch.manual_seed(seed)
+        np.random.seed(seed % (2 ** 32 - 1))
+    else:
+        assert worker_seeding in ('all', 'part')
+        # random / torch seed already called in dataloader iter class w/ worker_info.seed
+        # to reproduce some old results (same seed + hparam combo), partial seeding is required (skip numpy re-seed)
+        if worker_seeding == 'all':
+            np.random.seed(worker_info.seed % (2 ** 32 - 1))
+
+
 def hybrid_create_loader(
         dataset,
         input_size,
@@ -164,6 +221,7 @@ def hybrid_create_loader(
         vflip=0.,
         color_jitter=0.4,
         auto_augment=None,
+        num_aug_repeats=0,
         num_aug_splits=0,
         interpolation='bilinear',
         mean=IMAGENET_DEFAULT_MEAN,
@@ -171,12 +229,16 @@ def hybrid_create_loader(
         num_workers=1,
         distributed=False,
         crop_pct=None,
+        crop_mode=None,
         collate_fn=None,
         pin_memory=False,
-        fp16=False,
+        fp16=False,  # deprecated, use img_dtype
+        img_dtype=torch.float32,
+        device=torch.device('cuda'),
         tf_preprocessing=False,
         use_multi_epochs_loader=False,
         persistent_workers=True,
+        worker_seeding='all',
 
         g_interpolation='bilinear',
         g_mean=IMAGENET_DEFAULT_MEAN,
@@ -202,6 +264,7 @@ def hybrid_create_loader(
         mean=mean,
         std=std,
         crop_pct=crop_pct,
+        crop_mode=crop_mode,
         tf_preprocessing=tf_preprocessing,
         re_prob=re_prob,
         re_mode=re_mode,
@@ -209,7 +272,6 @@ def hybrid_create_loader(
         re_num_splits=re_num_splits,
         separate=num_aug_splits > 0,
     )
-
 
     dataset.global_transform = create_transform(
         g_input_size,
@@ -226,6 +288,7 @@ def hybrid_create_loader(
         mean=g_mean,
         std=g_std,
         crop_pct=g_crop_pct,
+        crop_mode=crop_mode,
         tf_preprocessing=tf_preprocessing,
         re_prob=re_prob,
         re_mode=re_mode,
@@ -234,22 +297,29 @@ def hybrid_create_loader(
         separate=num_aug_splits > 0,
     )
 
+    if isinstance(dataset, IterableImageDataset):
+        # give Iterable datasets early knowledge of num_workers so that sample estimates
+        # are correct before worker processes are launched
+        dataset.set_loader_cfg(num_workers=num_workers)
 
     sampler = None
     if distributed and not isinstance(dataset, torch.utils.data.IterableDataset):
         if is_training:
-            sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+            if num_aug_repeats:
+                sampler = RepeatAugSampler(dataset, num_repeats=num_aug_repeats)
+            else:
+                sampler = torch.utils.data.distributed.DistributedSampler(dataset)
         else:
             # This will add extra duplicate entries to result in equal num
             # of samples per-process, will slightly alter validation results
             sampler = OrderedDistributedSampler(dataset)
+    else:
+        assert num_aug_repeats == 0, "RepeatAugment not currently supported in non-distributed or IterableDataset use"
 
-    #collate_fn = torch.utils.data.dataloader.default_collate
     if collate_fn is None:
         collate_fn = fast_collate if use_prefetcher else torch.utils.data.dataloader.default_collate
 
     loader_class = torch.utils.data.DataLoader
-
     if use_multi_epochs_loader:
         loader_class = MultiEpochsDataLoader
 
@@ -261,7 +331,9 @@ def hybrid_create_loader(
         collate_fn=collate_fn,
         pin_memory=pin_memory,
         drop_last=is_training,
-        persistent_workers=persistent_workers)
+        worker_init_fn=partial(_worker_init, worker_seeding=worker_seeding),
+        persistent_workers=persistent_workers
+    )
     try:
         loader = loader_class(dataset, **loader_args)
     except TypeError as e:
@@ -275,12 +347,15 @@ def hybrid_create_loader(
             std=std,
             g_mean=g_mean,
             g_std=g_std,
-            fp16=fp16,
+            channels=input_size[0],
+            device=device,
+            fp16=fp16,  # deprecated, use img_dtype
+            img_dtype=img_dtype,
             re_prob=prefetch_re_prob,
             re_mode=re_mode,
             re_count=re_count,
             re_num_splits=re_num_splits
-        ) #'''
+        )
 
     return loader
 
@@ -315,4 +390,3 @@ class _RepeatSampler(object):
     def __iter__(self):
         while True:
             yield from iter(self.sampler)
-
