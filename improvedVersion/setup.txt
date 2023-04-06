@@ -1,8 +1,0 @@
-
-PyTorch >= 2.0 
-
-pip install timm==v0.8.17dev0
-
-pip install thop
-pip install pandas
-pip install tabulate
