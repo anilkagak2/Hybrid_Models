@@ -17,7 +17,7 @@ disk_router='DiSK_Router'
 hybrid_router='Hybrid_Router'
 
 epochs=100
-batch_size=256 #512
+batch_size=64 #256 #512
 ckpt='./output/train/20230331-192414-tf_mobilenetv3_small_100-224/last.pth.tar'
 
 CUDA_VISIBLE_DEVICES='0,1,2,3' ./distributed_train.sh 4 $data -b $batch_size \
