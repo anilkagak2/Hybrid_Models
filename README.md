@@ -4,7 +4,7 @@ Edge devices provide inference on predictive tasks to many end-users. However, d
 
 ## Brief Description  
 
-![](<pdf/PDE-GlobalLayer-Poster.png>)
+![](<Hybrid-Models-Poster.png>)
 
 
 ## Installation
