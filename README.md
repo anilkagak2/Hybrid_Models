@@ -6,6 +6,8 @@ Edge devices provide inference on predictive tasks to many end-users. However, d
 
 ![](<Hybrid-Models-Poster.png>)
 
+[Watch the video here](https://youtu.be/44oZzYDvFi8)
+
 
 ## Installation
 
